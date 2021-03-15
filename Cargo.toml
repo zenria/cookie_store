@@ -2,7 +2,7 @@
 authors = ["Patrick Fernie <patrick.fernie@gmail.com>"]
 description = "Implementation of Cookie storage and retrieval"
 name = "cookie_store"
-version = "0.13.3"
+version = "0.14.0"
 edition = "2018"
 repository = "https://github.com/pfernie/cookie_store"
 documentation = "https://docs.rs/cookie_store"
@@ -24,7 +24,7 @@ reqwest_impl = ["reqwest", "bytes"]
 [dependencies]
 idna = "0.2.0"
 log = "0.4.8"
-publicsuffix = { version = "1.5.4", default-features = false }
+psl-types = "2.0.2"
 serde = { version = "1.0.111", features = [ "derive" ] }
 serde_json = "1.0.55"
 time = "0.2.16"
@@ -41,4 +41,5 @@ version = "0.15.0"
 [dev-dependencies]
 env_logger = "0.8.3"
 pretty_assertions = "0.7.1"
+psl = "2.0.6"
 tokio-test = "^0.4.1"

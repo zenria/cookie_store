@@ -1,11 +1,11 @@
 use std::fmt::{self, Formatter};
 use std::io::{BufRead, Write};
 use std::iter;
+use std::marker::PhantomData;
 use std::ops::Deref;
 
 use ::cookie::Cookie as RawCookie;
 use log::debug;
-use publicsuffix;
 use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
@@ -42,17 +42,26 @@ pub enum StoreAction {
 pub type StoreResult<T> = Result<T, crate::Error>;
 pub type InsertResult = Result<StoreAction, CookieError>;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 /// An implementation for storing and retrieving [`Cookie`]s per the path and domain matching
 /// rules specified in [RFC6265](http://tools.ietf.org/html/rfc6265).
-pub struct CookieStore {
+pub struct CookieStore<T: psl_types::List> {
     /// Cookies stored by domain, path, then name
     cookies: DomainMap,
-    /// If set, enables [public suffix](https://tools.ietf.org/html/rfc6265#section-5.3) rejection based on the provided `publicsuffix::List`
-    public_suffix_list: Option<publicsuffix::List>,
+    /// If set, enables [public suffix](https://tools.ietf.org/html/rfc6265#section-5.3) rejection based on `psl_types::List`
+    public_suffix_list: Option<T>,
 }
 
-impl CookieStore {
+impl<T: psl_types::List> Default for CookieStore<T> {
+    fn default() -> Self {
+        Self {
+            cookies: Default::default(),
+            public_suffix_list: None,
+        }
+    }
+}
+
+impl<T: psl_types::List> CookieStore<T> {
     /// Return an `Iterator` of the cookies for `url` in the store
     pub fn get_request_cookies(&self, url: &Url) -> impl Iterator<Item = &RawCookie<'static>> {
         self.matches(url).into_iter().map(|c| c.deref())
@@ -72,9 +81,9 @@ impl CookieStore {
         }
     }
 
-    /// Specify a `publicsuffix::List` for the `CookieStore` to allow [public suffix
+    /// Specify a `psl_types::List` for the `CookieStore` to allow [public suffix
     /// matching](https://tools.ietf.org/html/rfc6265#section-5.3)
-    pub fn with_suffix_list(self, psl: publicsuffix::List) -> CookieStore {
+    pub fn with_suffix_list(self, psl: T) -> CookieStore<T> {
         CookieStore {
             cookies: self.cookies,
             public_suffix_list: Some(psl),
@@ -365,7 +374,7 @@ impl CookieStore {
 
     /// Load cookies from `reader`, deserializing with `cookie_from_str`, skipping any __expired__
     /// cookies
-    pub fn load<R, E, F>(reader: R, cookie_from_str: F) -> StoreResult<CookieStore>
+    pub fn load<R, E, F>(reader: R, cookie_from_str: F) -> StoreResult<CookieStore<T>>
     where
         R: BufRead,
         F: Fn(&str) -> Result<Cookie<'static>, E>,
@@ -384,7 +393,7 @@ impl CookieStore {
     }
 
     /// Load JSON-formatted cookies from `reader`, skipping any __expired__ cookies
-    pub fn load_json<R: BufRead>(reader: R) -> StoreResult<CookieStore> {
+    pub fn load_json<R: BufRead>(reader: R) -> StoreResult<CookieStore<T>> {
         CookieStore::load(reader, |cookie| ::serde_json::from_str(cookie))
     }
 
@@ -411,7 +420,7 @@ impl CookieStore {
     }
 }
 
-impl Serialize for CookieStore {
+impl<T: psl_types::List> Serialize for CookieStore<T> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -420,10 +429,11 @@ impl Serialize for CookieStore {
     }
 }
 
-struct CookieStoreVisitor;
+// the PhantomData can be removed when generic associated types become stable
+struct CookieStoreVisitor<T>(PhantomData<T>);
 
-impl<'de> Visitor<'de> for CookieStoreVisitor {
-    type Value = CookieStore;
+impl<'de, T: psl_types::List> Visitor<'de> for CookieStoreVisitor<T> {
+    type Value = CookieStore<T>;
 
     fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         write!(formatter, "a sequence of cookies")
@@ -437,12 +447,12 @@ impl<'de> Visitor<'de> for CookieStoreVisitor {
     }
 }
 
-impl<'de> Deserialize<'de> for CookieStore {
+impl<'de, T: psl_types::List> Deserialize<'de> for CookieStore<T> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_seq(CookieStoreVisitor)
+        deserializer.deserialize_seq(CookieStoreVisitor(PhantomData))
     }
 }
 
@@ -527,7 +537,7 @@ mod tests {
     }
 
     fn add_cookie(
-        store: &mut CookieStore,
+        store: &mut CookieStore<psl::List>,
         cookie: &str,
         url: &str,
         expires: Option<OffsetDateTime>,
@@ -539,7 +549,7 @@ mod tests {
         )
     }
 
-    fn make_match_store() -> CookieStore {
+    fn make_match_store() -> CookieStore<psl::List> {
         let mut store = CookieStore::default();
         inserted!(add_cookie(
             &mut store,
@@ -633,7 +643,7 @@ mod tests {
 
     #[test]
     fn insert_raw() {
-        let mut store = CookieStore::default();
+        let mut store = CookieStore::<psl::List>::default();
         inserted!(store.insert_raw(
             &RawCookie::parse("cookie1=value1").unwrap(),
             &test_utils::url("http://example.com/foo/bar"),
@@ -670,7 +680,7 @@ mod tests {
 
     #[test]
     fn parse() {
-        let mut store = CookieStore::default();
+        let mut store = CookieStore::<psl::List>::default();
         inserted!(store.parse(
             "cookie1=value1",
             &test_utils::url("http://example.com/foo/bar"),
@@ -905,7 +915,7 @@ mod tests {
 
     #[test]
     fn domains() {
-        let mut store = CookieStore::default();
+        let mut store = CookieStore::<psl::List>::default();
         //        The user agent will reject cookies unless the Domain attribute
         // specifies a scope for the cookie that would include the origin
         // server.  For example, the user agent will accept a cookie with a
@@ -1018,7 +1028,7 @@ mod tests {
 
     #[test]
     fn http_only() {
-        let mut store = CookieStore::default();
+        let mut store = CookieStore::<psl::List>::default();
         let c = Cookie::parse(
             "cookie1=value1; HttpOnly",
             &test_utils::url("http://example.com/foo/bar"),
@@ -1108,7 +1118,7 @@ mod tests {
         has_str!("cookie6=value6", output);
         has_str!("cookie7=value7; Secure", output);
         has_str!("cookie8=value8; HttpOnly", output);
-        let store = CookieStore::load_json(&output[..]).unwrap();
+        let store = CookieStore::<psl::List>::load_json(&output[..]).unwrap();
         assert!(store.get("example.com", "/foo", "cookie0").is_none());
         assert!(store.get("example.com", "/foo", "cookie1").unwrap().value() == "value1");
         assert!(store.get("example.com", "/foo", "cookie2").unwrap().value() == "value2");
@@ -1128,7 +1138,7 @@ mod tests {
         output.clear();
         let store = make_match_store();
         store.save_json(&mut output).unwrap();
-        let store = CookieStore::load_json(&output[..]).unwrap();
+        let store = CookieStore::<psl::List>::load_json(&output[..]).unwrap();
         check_matches!(&store);
     }
 
@@ -1212,7 +1222,7 @@ mod tests {
         has_str!("cookie6=value6", output);
         has_str!("cookie7=value7; Secure", output);
         has_str!("cookie8=value8; HttpOnly", output);
-        let store: CookieStore = serde_json::from_reader(&output[..]).unwrap();
+        let store: CookieStore<psl::List> = serde_json::from_reader(&output[..]).unwrap();
         assert!(store.get("example.com", "/foo", "cookie0").is_none());
         assert!(store.get("example.com", "/foo", "cookie1").unwrap().value() == "value1");
         assert!(store.get("example.com", "/foo", "cookie2").unwrap().value() == "value2");
@@ -1232,7 +1242,7 @@ mod tests {
         output.clear();
         let store = make_match_store();
         serde_json::to_writer(&mut output, &store).unwrap();
-        let store: CookieStore = serde_json::from_reader(&output[..]).unwrap();
+        let store: CookieStore<psl::List> = serde_json::from_reader(&output[..]).unwrap();
         check_matches!(&store);
     }
 
@@ -1429,7 +1439,7 @@ mod tests {
         }};
     }
 
-    fn matches_are(store: &CookieStore, url: &str, exp: Vec<&str>) {
+    fn matches_are(store: &CookieStore<psl::List>, url: &str, exp: Vec<&str>) {
         let matches = store
             .matches(&test_utils::url(url))
             .iter()
