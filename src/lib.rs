@@ -24,7 +24,7 @@
 //!   let file = std::fs::File::open("cookies.json")
 //!       .map(std::io::BufReader::new)
 //!       .unwrap();
-//!   cookie_store::CookieStore::<psl::List>::load_json(file).unwrap()
+//!   cookie_store::CookieStore::load_json(file).unwrap()
 //! };
 //! let cookie_store = cookie_store::CookieStoreMutex::new(cookie_store);
 //! let cookie_store = std::sync::Arc::new(cookie_store);

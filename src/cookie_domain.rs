@@ -94,14 +94,9 @@ impl CookieDomain {
 
     /// Tests if the domain-attribute is a public suffix as indicated by the provided
     /// `psl_types::List`.
-    pub fn is_public_suffix<T: psl_types::List>(&self, psl: &T) -> bool {
+    pub fn is_public_suffix<F: Fn(&[u8]) -> bool>(&self, is_psl: F) -> bool {
         if let Some(domain) = self.as_cow().as_ref().map(|d| d.as_bytes()) {
-            psl.suffix(domain)
-                // Only consider suffixes explicitly listed in the public suffix list
-                // to avoid issues like https://github.com/curl/curl/issues/658
-                .filter(psl_types::Suffix::is_known)
-                .filter(|suffix| suffix == &domain)
-                .is_some()
+            is_psl(domain)
         } else {
             false
         }
