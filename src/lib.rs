@@ -9,6 +9,8 @@ mod cookie_path;
 mod cookie_store;
 mod utils;
 
+pub use crate::cookie_store::CookieStore;
+
 #[derive(Debug)]
 pub struct IdnaErrors(idna::Errors);
 
