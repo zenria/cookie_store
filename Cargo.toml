@@ -10,10 +10,12 @@ readme = "README.md"
 license = "MIT/Apache-2.0"
 
 [features]
-default = []
+default = ["domains_lru"]
 
 # uses `indexmap::IndexMap` in lieu of HashMap internally, so cookies are maintained in insertion/creation order
 preserve_order = ["indexmap"]
+# uses `lru::LruCache` instead of HashMap or IndexMap for storing cookies by domain, keeping a maximum of 1000 domains
+domains_lru = ["lru"]
 
 [dependencies]
 idna = "0.2.0"
@@ -23,6 +25,7 @@ serde = { version = "1.0.111", features = [ "derive" ] }
 serde_json = "1.0.55"
 time = "0.2.16"
 url = "2.1.1"
+lru = { version = "0.7", optional = true }
 
 indexmap = { version = "1.4.0", optional = true }
 
