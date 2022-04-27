@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt::{self, Formatter};
 use std::io::{BufRead, Write};
 use std::iter;
@@ -18,16 +19,21 @@ use crate::CookieError;
 
 #[cfg(feature = "preserve_order")]
 use indexmap::IndexMap;
-#[cfg(not(feature = "preserve_order"))]
-use std::collections::HashMap;
 #[cfg(feature = "preserve_order")]
 type Map<K, V> = IndexMap<K, V>;
 #[cfg(not(feature = "preserve_order"))]
 type Map<K, V> = HashMap<K, V>;
+#[cfg(not(feature = "lru"))]
+type DMap<K, V> = HashMap<K, V>;
+
+#[cfg(feature = "lru")]
+use lru::LruCache;
+#[cfg(feature = "lru")]
+type DMap<K, V> = LruCache<K, V>;
 
 type NameMap = Map<String, Cookie<'static>>;
 type PathMap = Map<String, NameMap>;
-type DomainMap = Map<String, PathMap>;
+type DomainMap = DMap<String, PathMap>;
 
 #[derive(PartialEq, Clone, Debug, Eq)]
 pub enum StoreAction {
@@ -42,7 +48,7 @@ pub enum StoreAction {
 pub type StoreResult<T> = Result<T, crate::Error>;
 pub type InsertResult = Result<StoreAction, CookieError>;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 /// An implementation for storing and retrieving [`Cookie`]s per the path and domain matching
 /// rules specified in [RFC6265](http://tools.ietf.org/html/rfc6265).
 pub struct CookieStore {
@@ -50,6 +56,26 @@ pub struct CookieStore {
     cookies: DomainMap,
     /// If set, enables [public suffix](https://tools.ietf.org/html/rfc6265#section-5.3) rejection based on the provided `publicsuffix::List`
     public_suffix_list: Option<publicsuffix::List>,
+}
+
+#[cfg(not(feature = "lru"))]
+impl Default for CookieStore {
+    fn default() -> Self {
+        Self {
+            cookies: Default::default(),
+            public_suffix_list: Default::default(),
+        }
+    }
+}
+#[cfg(feature = "lru")]
+impl Default for CookieStore {
+    fn default() -> Self {
+        Self {
+            /// cache 1000 domains by default
+            cookies: LruCache::new(1000),
+            public_suffix_list: Default::default(),
+        }
+    }
 }
 
 impl CookieStore {
@@ -98,19 +124,19 @@ impl CookieStore {
 
     /// Returns true if the `CookieStore` contains an __unexpired__ `Cookie` corresponding to the
     /// specified `domain`, `path`, and `name`.
-    pub fn contains(&self, domain: &str, path: &str, name: &str) -> bool {
+    pub fn contains(&mut self, domain: &str, path: &str, name: &str) -> bool {
         self.get(domain, path, name).is_some()
     }
 
     /// Returns true if the `CookieStore` contains any (even an __expired__) `Cookie` corresponding
     /// to the specified `domain`, `path`, and `name`.
-    pub fn contains_any(&self, domain: &str, path: &str, name: &str) -> bool {
+    pub fn contains_any(&mut self, domain: &str, path: &str, name: &str) -> bool {
         self.get_any(domain, path, name).is_some()
     }
 
     /// Returns a reference to the __unexpired__ `Cookie` corresponding to the specified `domain`,
     /// `path`, and `name`.
-    pub fn get(&self, domain: &str, path: &str, name: &str) -> Option<&Cookie<'_>> {
+    pub fn get(&mut self, domain: &str, path: &str, name: &str) -> Option<&Cookie<'_>> {
         self.get_any(domain, path, name).and_then(|cookie| {
             if cookie.is_expired() {
                 None
@@ -134,7 +160,7 @@ impl CookieStore {
 
     /// Returns a reference to the (possibly __expired__) `Cookie` corresponding to the specified
     /// `domain`, `path`, and `name`.
-    pub fn get_any(&self, domain: &str, path: &str, name: &str) -> Option<&Cookie<'static>> {
+    pub fn get_any(&mut self, domain: &str, path: &str, name: &str) -> Option<&Cookie<'static>> {
         self.cookies.get(domain).and_then(|domain_cookies| {
             domain_cookies
                 .get(path)
@@ -159,6 +185,23 @@ impl CookieStore {
 
     /// Removes a `Cookie` from the store, returning the `Cookie` if it was in the store
     pub fn remove(&mut self, domain: &str, path: &str, name: &str) -> Option<Cookie<'static>> {
+        #[cfg(feature = "lru")]
+        fn dmap_remove<K, V, Q>(map: &mut DMap<K, V>, key: &Q) -> Option<V>
+        where
+            lru::KeyRef<K>: std::borrow::Borrow<Q>,
+            K: std::cmp::Eq + std::hash::Hash,
+            Q: std::cmp::Eq + std::hash::Hash + ?Sized,
+        {
+            map.pop(key)
+        }
+        #[cfg(not(feature = "lru"))]
+        fn dmap_remove<K, V, Q>(map: &mut DMap<K, V>, key: &Q) -> Option<V>
+        where
+            K: std::borrow::Borrow<Q> + std::cmp::Eq + std::hash::Hash,
+            Q: std::cmp::Eq + std::hash::Hash + ?Sized,
+        {
+            map.remove(key)
+        }
         #[cfg(not(feature = "preserve_order"))]
         fn map_remove<K, V, Q>(map: &mut Map<K, V>, key: &Q) -> Option<V>
         where
@@ -197,7 +240,7 @@ impl CookieStore {
         };
 
         if remove_domain {
-            map_remove(&mut self.cookies, domain);
+            dmap_remove(&mut self.cookies, domain);
         }
 
         removed
@@ -310,11 +353,17 @@ impl CookieStore {
         }
 
         if !cookie.is_expired() {
+            let path = {
+                let key = String::from(&cookie.domain);
+                if let Some(path) = self.cookies.get_mut(&key) {
+                    path
+                } else {
+                    self.cookies.put(String::from(&cookie.domain), Map::new());
+                    self.cookies.get_mut(&key).unwrap()
+                }
+            };
             Ok(
-                if self
-                    .cookies
-                    .entry(String::from(&cookie.domain))
-                    .or_insert_with(Map::new)
+                if path
                     .entry(String::from(&cookie.path))
                     .or_insert_with(Map::new)
                     .insert(cookie.name().to_owned(), cookie)
@@ -338,7 +387,8 @@ impl CookieStore {
     /// An iterator visiting all the __unexpired__ cookies in the store
     pub fn iter_unexpired<'a>(&'a self) -> impl Iterator<Item = &'a Cookie<'static>> + 'a {
         self.cookies
-            .values()
+            .iter()
+            .map(|(_k, v)| v)
             .flat_map(|dcs| dcs.values())
             .flat_map(|pcs| pcs.values())
             .filter(|c| !c.is_expired())
@@ -347,7 +397,8 @@ impl CookieStore {
     /// An iterator visiting all (including __expired__) cookies in the store
     pub fn iter_any<'a>(&'a self) -> impl Iterator<Item = &'a Cookie<'static>> + 'a {
         self.cookies
-            .values()
+            .iter()
+            .map(|(_k, v)| v)
             .flat_map(|dcs| dcs.values())
             .flat_map(|pcs| pcs.values())
     }
@@ -407,14 +458,20 @@ impl CookieStore {
     where
         I: IntoIterator<Item = Result<Cookie<'static>, E>>,
     {
-        let mut cookies = Map::new();
+        let mut cookies = DMap::new(1000);
         for cookie in iter {
             let cookie = cookie?;
             if !cookie.is_expired() {
-                cookies
-                    .entry(String::from(&cookie.domain))
-                    .or_insert_with(Map::new)
-                    .entry(String::from(&cookie.path))
+                let path = {
+                    let key = String::from(&cookie.domain);
+                    if let Some(path) = cookies.get_mut(&key) {
+                        path
+                    } else {
+                        cookies.put(String::from(&cookie.domain), Map::new());
+                        cookies.get_mut(&key).unwrap()
+                    }
+                };
+                path.entry(String::from(&cookie.path))
                     .or_insert_with(Map::new)
                     .insert(cookie.name().to_owned(), cookie);
             }
@@ -1123,7 +1180,7 @@ mod tests {
         has_str!("cookie6=value6", output);
         has_str!("cookie7=value7; Secure", output);
         has_str!("cookie8=value8; HttpOnly", output);
-        let store = CookieStore::load_json(&output[..]).unwrap();
+        let mut store = CookieStore::load_json(&output[..]).unwrap();
         assert!(store.get("example.com", "/foo", "cookie0").is_none());
         assert!(store.get("example.com", "/foo", "cookie1").unwrap().value() == "value1");
         assert!(store.get("example.com", "/foo", "cookie2").unwrap().value() == "value2");
@@ -1227,7 +1284,7 @@ mod tests {
         has_str!("cookie6=value6", output);
         has_str!("cookie7=value7; Secure", output);
         has_str!("cookie8=value8; HttpOnly", output);
-        let store: CookieStore = serde_json::from_reader(&output[..]).unwrap();
+        let mut store: CookieStore = serde_json::from_reader(&output[..]).unwrap();
         assert!(store.get("example.com", "/foo", "cookie0").is_none());
         assert!(store.get("example.com", "/foo", "cookie1").unwrap().value() == "value1");
         assert!(store.get("example.com", "/foo", "cookie2").unwrap().value() == "value2");
@@ -1474,8 +1531,12 @@ mod tests {
         // Matching the list in Firefox's regression test:
         // https://hg.mozilla.org/integration/autoland/rev/c4d13b3ca1e2
         let secure_uris = vec![
-          "http://localhost", "http://localhost:1234", "http://127.0.0.1",
-          "http://127.0.0.2", "http://127.1.0.1",      "http://[::1]",
+            "http://localhost",
+            "http://localhost:1234",
+            "http://127.0.0.1",
+            "http://127.0.0.2",
+            "http://127.1.0.1",
+            "http://[::1]",
         ];
         for secure_uri in secure_uris {
             let mut store = CookieStore::default();
@@ -1486,11 +1547,7 @@ mod tests {
                 None,
                 None,
             ));
-            matches_are(
-                &store,
-                secure_uri,
-                vec!["cookie1=1a"],
-            );
+            matches_are(&store, secure_uri, vec!["cookie1=1a"]);
         }
     }
 
