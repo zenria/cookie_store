@@ -23,8 +23,9 @@ pub use crate::cookie_expiration::CookieExpiration;
 mod cookie_path;
 pub use crate::cookie_path::CookiePath;
 mod cookie_store;
-pub use crate::cookie_store::CookieStore;
 mod utils;
+
+pub use crate::cookie_store::CookieStore;
 
 #[derive(Debug)]
 pub struct IdnaErrors(idna::Errors);

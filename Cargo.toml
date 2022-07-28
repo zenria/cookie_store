@@ -16,10 +16,12 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-default = []
+default = ["domains_lru"]
 
 # uses `indexmap::IndexMap` in lieu of HashMap internally, so cookies are maintained in insertion/creation order
 preserve_order = ["indexmap"]
+# uses `lru::LruCache` instead of HashMap or IndexMap for storing cookies by domain, keeping a maximum of 1000 domains
+domains_lru = ["lru"]
 
 [dependencies]
 idna = "0.2.3"
@@ -29,7 +31,7 @@ serde = { version = "1.0.136", features = [ "derive" ] }
 serde_json = "1.0.79"
 time = "0.3.7"
 url = "2.2.2"
-
+lru = { version = "0.7", optional = true }
 indexmap = { version = "1.6.2", optional = true }
 
 [dependencies.cookie]
