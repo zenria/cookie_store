@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt::{self, Formatter};
 use std::io::{BufRead, Write};
 use std::ops::Deref;
@@ -16,7 +17,7 @@ use crate::CookieError;
 use indexmap::IndexMap;
 #[cfg(feature = "preserve_order")]
 type Map<K, V> = IndexMap<K, V>;
-#[cfg(not(feature = "preserve_order"))]
+#[cfg(all(not(feature = "preserve_order")))]
 type Map<K, V> = HashMap<K, V>;
 #[cfg(not(feature = "lru"))]
 type DMap<K, V> = HashMap<K, V>;
@@ -67,8 +68,8 @@ impl Default for CookieStore {
 impl Default for CookieStore {
     fn default() -> Self {
         Self {
-            /// cache 1000 domains by default
-            cookies: LruCache::new(1000),
+            // cache 1000 domains by default
+            cookies: LruCache::new(1000.try_into().unwrap()),
             public_suffix_list: Default::default(),
         }
     }
@@ -190,8 +191,7 @@ impl CookieStore {
         #[cfg(feature = "lru")]
         fn dmap_remove<K, V, Q>(map: &mut DMap<K, V>, key: &Q) -> Option<V>
         where
-            lru::KeyRef<K>: std::borrow::Borrow<Q>,
-            K: std::cmp::Eq + std::hash::Hash,
+            K: std::cmp::Eq + std::hash::Hash + std::borrow::Borrow<Q>,
             Q: std::cmp::Eq + std::hash::Hash + ?Sized,
         {
             map.pop(key)
@@ -496,7 +496,7 @@ impl CookieStore {
     where
         I: IntoIterator<Item = Result<Cookie<'static>, E>>,
     {
-        let mut cookies = DMap::new(1000);
+        let mut cookies = DMap::new(1000.try_into().unwrap());
         for cookie in iter {
             let cookie = cookie?;
             if include_expired || !cookie.is_expired() {
@@ -525,7 +525,7 @@ impl CookieStore {
         #[cfg(feature = "public_suffix")] public_suffix_list: Option<publicsuffix::List>,
     ) -> Self {
         Self {
-            cookies: DomainMap::new(),
+            cookies: DomainMap::new(1000.try_into().unwrap()),
             #[cfg(feature = "public_suffix")]
             public_suffix_list,
         }
@@ -1603,7 +1603,7 @@ mod tests {
             has_str!("cookie6=value6", output);
             has_str!("cookie7=value7; Secure", output);
             has_str!("cookie8=value8; HttpOnly", output);
-            let store = CookieStore::load_json(&output[..]).unwrap();
+            let mut store = CookieStore::load_json(&output[..]).unwrap();
             assert!(store.get("example.com", "/foo", "cookie0").is_none());
             assert!(store.get("example.com", "/foo", "cookie1").unwrap().value() == "value1");
             assert!(store.get("example.com", "/foo", "cookie2").unwrap().value() == "value2");
@@ -1707,7 +1707,7 @@ mod tests {
             has_str!("cookie6=value6", output);
             has_str!("cookie7=value7; Secure", output);
             has_str!("cookie8=value8; HttpOnly", output);
-            let store: CookieStore = serde_json::from_reader(&output[..]).unwrap();
+            let mut store: CookieStore = serde_json::from_reader(&output[..]).unwrap();
             assert!(store.get("example.com", "/foo", "cookie0").is_none());
             assert!(store.get("example.com", "/foo", "cookie1").unwrap().value() == "value1");
             assert!(store.get("example.com", "/foo", "cookie2").unwrap().value() == "value2");
